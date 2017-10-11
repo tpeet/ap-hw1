@@ -1,0 +1,24 @@
+Measurement results at 2017-10-11 21:07:18
+Reactor:
+Temperature:38.884341:
+Pressure:1.945631:
+Level:81:
+Input pipe:
+Input flow:0.147363:
+Output pipe:
+Output flow:0.079980:
+Measurement results at 2017-10-11 21:07:18
+Input pipe:
+Input flow:0.147363:
+Output pipe:
+Output flow:0.152993:
+Measurement results at 2017-10-11 21:07:20
+Input pipe:
+Input flow:0.066939:
+Output pipe:
+Output flow:0.168786:
+Measurement results at 2017-10-11 21:07:20
+Input pipe:
+Input flow:0.066939:
+Output pipe:
+Output flow:0.168786:

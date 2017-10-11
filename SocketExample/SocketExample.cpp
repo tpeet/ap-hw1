@@ -2,6 +2,7 @@
 #include "Winsock2.h" // necessary for sockets, Windows.h is not needed.
 #include "mswsock.h"
 #include "process.h"  // necessary for threading
+#include "time.h" // necessary for timestamps
 //
 // Global variables
 //
@@ -19,6 +20,7 @@ HANDLE hReceiveNet;       // TCP/IP info reading thread handle
 BOOL SocketError;
 BOOL isConnected;
 BOOL isStarted;
+FILE *file;
 //
 // Prototypes
 //
@@ -33,6 +35,12 @@ void parseStringFromBuf(char *dst, char *buffer, int *parsedBytes);
 //****************************************************************************************************************
 int _tmain(int argc, _TCHAR* argv[])
 {
+	file = fopen("log.txt", "w");
+	if (file == NULL)
+	{
+		printf("Error opening log file!\n");
+		exit(1);
+	}
 	//
 	// Initializations for multithreading
 	//
@@ -137,6 +145,20 @@ int _tmain(int argc, _TCHAR* argv[])
 			}
 			SetEvent(hCommandProcessed);
 		}
+		else if (!_tcsicmp(CommandBuf, _T("break"))) {
+			if (isConnected && isStarted) {
+				sendMsg(hClientSocket, L"Break");
+				isStarted = FALSE;
+				_tprintf(_T("client sent: %s\n"), L"Break");
+			}
+			else if (!isStarted) {
+				_tprintf(_T("Can't use 'break' as the sending is not started\n"));
+			}
+			else {
+				_tprintf(_T("Can't use 'break' as you're not connected to the emulator\n"));
+			}
+			SetEvent(hCommandProcessed);
+		}
 		else if (!_tcsicmp(CommandBuf, _T("stop"))) {
 			if (isConnected) {
 				sendMsg(hClientSocket, L"Stop");
@@ -185,6 +207,7 @@ out:
 		}
 		closesocket(hClientSocket);
 	}
+	fclose(file);
 	WSACleanup(); // clean Windows sockets support
 	CloseHandle(hStopCommandGot);
 	CloseHandle(hCommandGot);
@@ -302,7 +325,11 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 					   isConnected = TRUE;
 				   }
 				   else if (isConnected && isStarted) {
-					   
+					   if (file == NULL)
+					   {
+						   printf("Error opening log file!\n");
+						   exit(1);
+					   }
 					   int packageLength;
 					   int numChannels;
 					   int parsedBytes = 0;
@@ -310,6 +337,13 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 					   parsedBytes += sizeof(int);
 					   memcpy(&numChannels, DataBuf.buf + parsedBytes, sizeof(int));
 					   parsedBytes += sizeof(int);
+
+					   // timestamp
+					   char time_buff[100];
+					   time_t now = time(0);
+					   strftime(time_buff, 100, "%Y-%m-%d %H:%M:%S", localtime(&now));
+					   fprintf(file, "Measurement results at %s\n", time_buff);
+					   
 					   
 					   for (int i = 0; i < numChannels; i++) {
 						   int measurementsPoints;
@@ -317,22 +351,29 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 						   parsedBytes += sizeof(int);
 						   char channelName[128];
 						   parseStringFromBuf(channelName, DataBuf.buf, &parsedBytes);
+
 						   printf("%s:\n", channelName);
+						   fprintf(file, "%s:\n", channelName);
 						   for (int j = 0; j < measurementsPoints; j++) {
 							   char measurementName[128];
 							   parseStringFromBuf(measurementName, DataBuf.buf, &parsedBytes);
 							   printf("%s:", measurementName);
+							   fprintf(file, "%s:", measurementName);
 							   if (strcmp(measurementName, "Level") == 0) {
 								   int measurement;
 								   memcpy(&measurement, DataBuf.buf + parsedBytes, 4);
 								   parsedBytes += 4;
 								   _tprintf(_T("%d\n"), measurement);
+								   fprintf(file, "%d\n", measurement);
+								   //TODO: Add units
 							   }
 							   else {
 								   double measurement;
 								   memcpy(&measurement, DataBuf.buf + parsedBytes, 8);
 								   parsedBytes += 8;
 								   _tprintf(_T("%lf\n"), measurement);
+								   fprintf(file, "%lf\n", measurement);
+								   //TODO: Add units
 							   }
 
 						   }
