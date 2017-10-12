@@ -5,6 +5,7 @@
 #include "time.h" // necessary for timestamps
 #include "fcntl.h" // for printing symbols
 #include "io.h"
+#include <locale.h>
 //
 // Global variables
 //
@@ -14,11 +15,20 @@ HANDLE hStopCommandGot;   // event "the main thread has recognized that it was t
 HANDLE hCommandProcessed; // event "the main thread has finished the processing of command"
 HANDLE hReadKeyboard;     // keyboard reading thread handle
 HANDLE hStdIn;			  // stdin standard input stream handle
+
+HANDLE hSendConnect;
+HANDLE hSendStart;
+HANDLE hSendStop;
+HANDLE hSendBreak;
+HANDLE hSendReady;
+
 WSADATA WsaData;          // filled during Winsock initialization 
 DWORD Error;
 SOCKET hClientSocket = INVALID_SOCKET;
 sockaddr_in ClientSocketInfo;
 HANDLE hReceiveNet;       // TCP/IP info reading thread handle
+HANDLE hSendData;		  // SendData handle
+HANDLE hSendMessage;
 BOOL SocketError;
 BOOL isConnected;
 BOOL isStarted;
@@ -38,6 +48,7 @@ void parseStringFromBuf(char *dst, char *buffer, int *parsedBytes);
 //****************************************************************************************************************
 int _tmain(int argc, _TCHAR* argv[])
 {
+	//setlocale(LC_ALL, "");
 	//_setmode(_fileno(stdout), _O_U16TEXT);
 	wchar_t fileName[128];
 	if (argc == 2) {
@@ -62,6 +73,11 @@ int _tmain(int argc, _TCHAR* argv[])
 	// Initializations for multithreading
 	//
 	if (!(hCommandGot = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
+		!(hSendConnect = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
+		!(hSendStop = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
+		!(hSendStart = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
+		!(hSendBreak = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
+		!(hSendReady = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
 		!(hStopCommandGot = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
 		!(hCommandProcessed = CreateEvent(NULL, TRUE, TRUE, NULL)))
 	{
@@ -84,6 +100,11 @@ int _tmain(int argc, _TCHAR* argv[])
 	}
 	if (!(hReadKeyboard = (HANDLE)_beginthreadex(NULL, 0, &ReadKeyboard, NULL, 0, NULL)))
 	{ 
+		_tprintf(_T("Unable to create keyboard thread\n"));
+		return 1;
+	}
+	if (!(hSendData = (HANDLE)_beginthreadex(NULL, 0, &SendNet, NULL, 0, NULL)))
+	{
 		_tprintf(_T("Unable to create keyboard thread\n"));
 		return 1;
 	}
@@ -121,8 +142,8 @@ int _tmain(int argc, _TCHAR* argv[])
 				//
 				// Connect client to server
 				//
-				if (!SocketError)
-				{
+				//if (!SocketError)
+				//{
 					ClientSocketInfo.sin_family = AF_INET;
 					ClientSocketInfo.sin_addr.s_addr = inet_addr("127.0.0.1");
 					ClientSocketInfo.sin_port = htons(1234);  // port number is selected just for example
@@ -140,7 +161,10 @@ int _tmain(int argc, _TCHAR* argv[])
 						isConnected = FALSE;
 						SocketError = TRUE;
 					}
-				}
+					else {
+						SocketError = FALSE;
+					}
+				//}
 				//
 				// Start net thread
 				//
@@ -160,9 +184,10 @@ int _tmain(int argc, _TCHAR* argv[])
 		}
 		else if (!_tcsicmp(CommandBuf, _T("start"))) {
 			if (isConnected) {
-				sendMsg(hClientSocket, L"Start");
+				//sendMsg(hClientSocket, L"Start");
 				isStarted = TRUE;
-				_tprintf(_T("client sent: %s\n"), L"Start");
+				//_tprintf(_T("client sent: %s\n"), L"Start");
+				SetEvent(hSendStart);
 			}
 			else {
 				_tprintf(_T("Can't start as you're not connected to the emulator\n"));
@@ -171,9 +196,10 @@ int _tmain(int argc, _TCHAR* argv[])
 		}
 		else if (!_tcsicmp(CommandBuf, _T("break"))) {
 			if (isConnected && isStarted) {
-				sendMsg(hClientSocket, L"Break");
+				//sendMsg(hClientSocket, L"Break");
 				isStarted = FALSE;
-				_tprintf(_T("client sent: %s\n"), L"Break");
+				//_tprintf(_T("client sent: %s\n"), L"Break");
+				SetEvent(hSendBreak);
 			}
 			else if (!isStarted) {
 				_tprintf(_T("Can't use 'break' as the sending is not started\n"));
@@ -185,10 +211,11 @@ int _tmain(int argc, _TCHAR* argv[])
 		}
 		else if (!_tcsicmp(CommandBuf, _T("stop"))) {
 			if (isConnected) {
-				sendMsg(hClientSocket, L"Stop");
+				//sendMsg(hClientSocket, L"Stop");
 				isStarted = FALSE;
 				isConnected = FALSE;
-				_tprintf(_T("client sent: %s\n"), L"Stop");
+				//_tprintf(_T("client sent: %s\n"), L"Stop");
+				SetEvent(hSendStop);
 
 			}
 			else {
@@ -222,6 +249,11 @@ out:
 		WaitForSingleObject(hReceiveNet, INFINITE); // Wait until the end of receive thread
 		CloseHandle(hReceiveNet);
 	}
+	if (hReceiveNet)
+	{
+		//WaitForSingleObject(hReceiveNet, INFINITE); // Wait until the end of receive thread
+		CloseHandle(hSendData);
+	}
 	if (hClientSocket != INVALID_SOCKET)
 	{
 		if (shutdown(hClientSocket, SD_RECEIVE) == SOCKET_ERROR)
@@ -237,6 +269,7 @@ out:
 	CloseHandle(hStopCommandGot);
 	CloseHandle(hCommandGot);
 	CloseHandle(hCommandProcessed);
+
 	return 0;
 }
 //**************************************************************************************************************
@@ -294,8 +327,42 @@ unsigned int __stdcall ReadKeyboard(void* pArguments)
 //********************************************************************************************************************
 unsigned int __stdcall SendNet(void* pArguments)
 {
+	DWORD WaitResult;
+	HANDLE SendEvents[4];
+	SendEvents[0] = hSendStart;
+	SendEvents[1] = hSendBreak;
+	SendEvents[2] = hSendStop;
+	SendEvents[3] = hSendReady;
+	while (TRUE) {
+		WaitResult = WaitForMultipleObjects(4, SendEvents,
+			FALSE, // wait until one of the events becomes signaled
+			INFINITE);
+
+		if (WaitResult == WAIT_OBJECT_0) { // send start
+			printf("---------------send start-----------\n");
+			sendMsg(hClientSocket, L"Start");
+			ResetEvent(hSendStart);
+		}
+		else if (WaitResult == WAIT_OBJECT_0 + 1) { //send break
+			printf("---------------send break-----------\n");
+			sendMsg(hClientSocket, L"Break");
+			ResetEvent(hSendBreak);
+		}
+		else if (WaitResult == WAIT_OBJECT_0 + 2) { // send stop
+			printf("---------------send stop-----------\n");
+			sendMsg(hClientSocket, L"Stop");
+			ResetEvent(hSendStop);
+		}
+		else if (WaitResult == WAIT_OBJECT_0 + 3) { // send ready
+			printf("---------------send ready-----------\n");
+			sendMsg(hClientSocket, L"Ready");
+			ResetEvent(hSendReady);
+		}
+	}
+
 	return 1;
 }
+
 unsigned int __stdcall ReceiveNet(void* pArguments)
 {
 	//
@@ -348,7 +415,7 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 				   char ArrayOutBuf[2048];
 				   if (bufWcsCompare(DataBuf.buf, L"Identify") == 0) {
 					   sendMsg(hClientSocket, L"coursework");
-					   _tprintf(_T("client sent: %s\n"), L"courswowrk");
+					   _tprintf(_T("client sent: %s\n"), L"courewowrk");
 				   }
 				   else if (bufWcsCompare(DataBuf.buf, L"Accepted") == 0) {
 					   isConnected = TRUE;
@@ -402,8 +469,8 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 								   parsedBytes += 8;
 
 								   if (strcmp(measurementName, "Temperature") == 0) {
-									   _tprintf(_T("%.lf °C\n"), measurement);
-									   //printf();
+									   //_tprintf(_T("%.lf °C\n"), measurement);
+									   printf("%.lf \370C\n", measurement);
 									   fprintf(file, "%.lf °C\n", measurement);
 								   }
 								   else if (strcmp(measurementName, "Pressure") == 0) {
@@ -411,7 +478,7 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 									   fprintf(file, "%.lf atm\n", measurement);
 								   }
 								   else {
-									   _tprintf(_T("%.3f m³/s\n"), measurement);
+									   _tprintf(_T("%.3f m3/s\n"), measurement);
 									   fprintf(file, "%.3f m³/s\n", measurement);
 								   }
 
@@ -420,7 +487,8 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 						   }
 					   }
 					   fprintf(file, "\n");
-					   sendMsg(hClientSocket, L"Ready");
+					   //sendMsg(hClientSocket, L"Ready");
+					   SetEvent(hSendReady);
 					   
 				   }
 
@@ -458,7 +526,6 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 			{
 			 _tprintf(_T("%d bytes received\n"), nReceivedBytes);
 			          // Here should follow the processing of received data
-			 // TODO: Add smth here
 			}
 		}
 	}
@@ -485,7 +552,6 @@ void sendMsg(SOCKET s, wchar_t * str)
 	memcpy(temp_buff, &messageLength, sizeof(int));
 	memcpy(temp_buff + sizeof(int), str, (wcslen(str) + 1) * sizeof(wchar_t));
 	send(s, temp_buff, messageLength, 0);
-
 }
 
 void parseStringFromBuf(char *dst, char *buffer, int *parsedBytes)
