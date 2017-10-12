@@ -3,6 +3,8 @@
 #include "mswsock.h"
 #include "process.h"  // necessary for threading
 #include "time.h" // necessary for timestamps
+#include "fcntl.h" // for printing symbols
+#include "io.h"
 //
 // Global variables
 //
@@ -26,6 +28,7 @@ FILE *file;
 //
 unsigned int __stdcall ReadKeyboard(void* pArguments);
 unsigned int __stdcall ReceiveNet(void* pArguments);
+unsigned int __stdcall SendNet(void* pArguments);
 int bufWcsCompare(char *buffer, wchar_t *str);
 void sendMsg(SOCKET s, wchar_t *str);
 void parseStringFromBuf(char *dst, char *buffer, int *parsedBytes);
@@ -35,7 +38,21 @@ void parseStringFromBuf(char *dst, char *buffer, int *parsedBytes);
 //****************************************************************************************************************
 int _tmain(int argc, _TCHAR* argv[])
 {
-	file = fopen("log.txt", "w");
+	//_setmode(_fileno(stdout), _O_U16TEXT);
+	wchar_t fileName[128];
+	if (argc == 2) {
+		memcpy(fileName, argv[1], 128);	
+	}
+	else {
+		// timestamp
+		char time_buff[100];
+		time_t now = time(0);
+		strftime(time_buff, 100, "%Y_%m_%d-%H_%M_%S", localtime(&now));
+		swprintf(fileName, L"D:\Kool\Advanced programming\%s.txt", time_buff);
+	}
+	_tprintf(_T("Logger path: %s\n"), fileName);
+
+	file = _wfopen(fileName, L"w");
 	if (file == NULL)
 	{
 		printf("Error opening log file!\n");
@@ -100,7 +117,7 @@ int _tmain(int argc, _TCHAR* argv[])
 			}
 			else {
 
-
+				_tprintf(_T("Starting new connection\n"));
 				//
 				// Connect client to server
 				//
@@ -112,11 +129,15 @@ int _tmain(int argc, _TCHAR* argv[])
 					if ((hClientSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == INVALID_SOCKET)
 					{
 						_tprintf(_T("socket() failed, error %d\n"), WSAGetLastError());
+						isStarted = FALSE;
+						isConnected = FALSE;
 						SocketError = TRUE;
 					}
 					else if (connect(hClientSocket, (SOCKADDR*)&ClientSocketInfo, sizeof(ClientSocketInfo)) == SOCKET_ERROR)
 					{
 						_tprintf(_T("Unable to connect to server, error %d\n"), WSAGetLastError());
+						isStarted = FALSE;
+						isConnected = FALSE;
 						SocketError = TRUE;
 					}
 				}
@@ -128,6 +149,9 @@ int _tmain(int argc, _TCHAR* argv[])
 					if (!(hReceiveNet = (HANDLE)_beginthreadex(NULL, 0, &ReceiveNet, NULL, 0, NULL)))
 					{
 						_tprintf(_T("Unable to create socket receiving thread\n"));
+						isStarted = FALSE;
+						isConnected = FALSE;
+						SetEvent(hCommandProcessed);
 						goto out;
 					}
 				}
@@ -163,6 +187,7 @@ int _tmain(int argc, _TCHAR* argv[])
 			if (isConnected) {
 				sendMsg(hClientSocket, L"Stop");
 				isStarted = FALSE;
+				isConnected = FALSE;
 				_tprintf(_T("client sent: %s\n"), L"Stop");
 
 			}
@@ -267,6 +292,10 @@ unsigned int __stdcall ReadKeyboard(void* pArguments)
 //********************************************************************************************************************
 //                          TCP/IP INFO RECEIVING THREAD
 //********************************************************************************************************************
+unsigned int __stdcall SendNet(void* pArguments)
+{
+	return 1;
+}
 unsigned int __stdcall ReceiveNet(void* pArguments)
 {
 	//
@@ -357,27 +386,40 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 						   for (int j = 0; j < measurementsPoints; j++) {
 							   char measurementName[128];
 							   parseStringFromBuf(measurementName, DataBuf.buf, &parsedBytes);
-							   printf("%s:", measurementName);
-							   fprintf(file, "%s:", measurementName);
+							   printf("%s: ", measurementName);
+							   fprintf(file, "%s: ", measurementName);
+							   
 							   if (strcmp(measurementName, "Level") == 0) {
 								   int measurement;
 								   memcpy(&measurement, DataBuf.buf + parsedBytes, 4);
 								   parsedBytes += 4;
-								   _tprintf(_T("%d\n"), measurement);
-								   fprintf(file, "%d\n", measurement);
-								   //TODO: Add units
+								   _tprintf(_T("%d %\n"), measurement);
+								   fprintf(file, "%d %\n", measurement);
 							   }
 							   else {
 								   double measurement;
 								   memcpy(&measurement, DataBuf.buf + parsedBytes, 8);
 								   parsedBytes += 8;
-								   _tprintf(_T("%lf\n"), measurement);
-								   fprintf(file, "%lf\n", measurement);
-								   //TODO: Add units
+
+								   if (strcmp(measurementName, "Temperature") == 0) {
+									   _tprintf(_T("%.lf °C\n"), measurement);
+									   //printf();
+									   fprintf(file, "%.lf °C\n", measurement);
+								   }
+								   else if (strcmp(measurementName, "Pressure") == 0) {
+									   _tprintf(_T("%.lf atm\n"), measurement);
+									   fprintf(file, "%.lf atm\n", measurement);
+								   }
+								   else {
+									   _tprintf(_T("%.3f m³/s\n"), measurement);
+									   fprintf(file, "%.3f m³/s\n", measurement);
+								   }
+
 							   }
 
 						   }
 					   }
+					   fprintf(file, "\n");
 					   sendMsg(hClientSocket, L"Ready");
 					   
 				   }
@@ -421,6 +463,8 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 		}
 	}
 out:
+	isConnected = FALSE;
+	isStarted = FALSE;
 	WSACloseEvent(NetEvents[1]);
 	return 0;
 }
