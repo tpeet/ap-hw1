@@ -16,7 +16,6 @@ HANDLE hCommandProcessed; // event "the main thread has finished the processing 
 HANDLE hReadKeyboard;     // keyboard reading thread handle
 HANDLE hStdIn;			  // stdin standard input stream handle
 
-HANDLE hSendConnect;
 HANDLE hSendStart;
 HANDLE hSendStop;
 HANDLE hSendBreak;
@@ -28,7 +27,7 @@ SOCKET hClientSocket = INVALID_SOCKET;
 sockaddr_in ClientSocketInfo;
 HANDLE hReceiveNet;       // TCP/IP info reading thread handle
 HANDLE hSendData;		  // SendData handle
-HANDLE hSendMessage;
+//HANDLE hSendMessage;
 BOOL SocketError;
 BOOL isConnected;
 BOOL isStarted;
@@ -73,7 +72,6 @@ int _tmain(int argc, _TCHAR* argv[])
 	// Initializations for multithreading
 	//
 	if (!(hCommandGot = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
-		!(hSendConnect = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
 		!(hSendStop = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
 		!(hSendStart = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
 		!(hSendBreak = CreateEvent(NULL, TRUE, FALSE, NULL)) ||
@@ -183,11 +181,14 @@ int _tmain(int argc, _TCHAR* argv[])
 			SetEvent(hCommandProcessed);
 		}
 		else if (!_tcsicmp(CommandBuf, _T("start"))) {
-			if (isConnected) {
+			if (isConnected && !isStarted) {
 				//sendMsg(hClientSocket, L"Start");
 				isStarted = TRUE;
 				//_tprintf(_T("client sent: %s\n"), L"Start");
 				SetEvent(hSendStart);
+			}
+			else if (isStarted) {
+				_tprintf(_T("The data sending is already started. Can't start again\n"));
 			}
 			else {
 				_tprintf(_T("Can't start as you're not connected to the emulator\n"));
@@ -249,7 +250,7 @@ out:
 		WaitForSingleObject(hReceiveNet, INFINITE); // Wait until the end of receive thread
 		CloseHandle(hReceiveNet);
 	}
-	if (hReceiveNet)
+	if (hSendData)
 	{
 		//WaitForSingleObject(hReceiveNet, INFINITE); // Wait until the end of receive thread
 		CloseHandle(hSendData);
@@ -269,6 +270,10 @@ out:
 	CloseHandle(hStopCommandGot);
 	CloseHandle(hCommandGot);
 	CloseHandle(hCommandProcessed);
+	CloseHandle(hSendBreak);
+	CloseHandle(hSendStart);
+	CloseHandle(hSendReady);
+	CloseHandle(hSendStop);
 
 	return 0;
 }
@@ -411,7 +416,8 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 				if (WSAGetOverlappedResult(hClientSocket, &Overlapped, &nReceivedBytes, FALSE, &ReceiveFlags))
 				{
 		   		   _tprintf(_T("%d bytes received\n"), nReceivedBytes);
-				   _tprintf(_T("client received: %s\n"), DataBuf.buf + sizeof(int));
+				   if (nReceivedBytes > 0)
+						_tprintf(_T("client received: %s\n"), DataBuf.buf + sizeof(int));
 				   char ArrayOutBuf[2048];
 				   if (bufWcsCompare(DataBuf.buf, L"Identify") == 0) {
 					   sendMsg(hClientSocket, L"coursework");
@@ -461,7 +467,7 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 								   memcpy(&measurement, DataBuf.buf + parsedBytes, 4);
 								   parsedBytes += 4;
 								   _tprintf(_T("%d %\n"), measurement);
-								   fprintf(file, "%d %\n", measurement);
+								   fprintf(file, "%d %%\n", measurement);
 							   }
 							   else {
 								   double measurement;
@@ -478,7 +484,7 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 									   fprintf(file, "%.lf atm\n", measurement);
 								   }
 								   else {
-									   _tprintf(_T("%.3f m3/s\n"), measurement);
+									   printf("%.3f m%c/s\n", measurement, '\xFC');
 									   fprintf(file, "%.3f m³/s\n", measurement);
 								   }
 
@@ -496,7 +502,10 @@ unsigned int __stdcall ReceiveNet(void* pArguments)
 			    }
 			    else
 			    {	// Fatal problems
-		  		   _tprintf(_T("WSAGetOverlappedResult() failed, error %d\n"), GetLastError());
+					if (GetLastError() == 10054)
+						_tprintf(_T("WSAGetOverlappedResult() failed, probably due to the server failure, error %d\n"), GetLastError());
+					else
+		  				_tprintf(_T("WSAGetOverlappedResult() failed, error %d\n"), GetLastError());
 				   goto out;
 			    }
 			default: // Fatal problems
@@ -539,10 +548,8 @@ out:
 int bufWcsCompare(char *buffer, wchar_t *str)
 {
 	char temp_buff[2048];
-	//wchar_t *identifyStr = L"Identify";
 	memcpy(temp_buff, str, (wcslen(str) + 1) * sizeof(wchar_t));
 	return strcmp(buffer + sizeof(int), temp_buff);
-	//delete temp_buff;
 }
 
 void sendMsg(SOCKET s, wchar_t * str)
